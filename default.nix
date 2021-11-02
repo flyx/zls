@@ -5,8 +5,8 @@ let
   zig-overlay = pkgs.fetchFromGitHub {
     owner = "arqv";
     repo = "zig-overlay";
-    rev = "5b9504b8bff072553051d6e130727f7f5c0715c3";
-    sha256 = "NDm5qT6/qr789IhI2dsQxrR5/Mr7cXVj17x/+tl3pDE=";
+    rev = "e8d8d2ad3caf053ee9f6cbe30fd057342cab07d7";
+    sha256 = "pkj30vBzBCjMtGqeWfHZC6BjyDYPhXxvPKW/cNgvxVE=";
   };
   gitignoreSrc = pkgs.fetchFromGitHub {
     owner = "hercules-ci";
@@ -26,6 +26,8 @@ pkgs.stdenvNoCC.mkDerivation {
   dontInstall = true;
   buildPhase = ''
     mkdir -p $out
+    echo "building in $out, contents:"
+    ls src
     zig build install -Drelease-safe=true -Ddata_version=master --prefix $out
   '';
   XDG_CACHE_HOME = ".cache";
