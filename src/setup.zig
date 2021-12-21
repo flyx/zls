@@ -13,7 +13,7 @@ fn write(text: []const u8) void {
     stdout.writeAll(text) catch @panic("Could not write to stdout");
 }
 
-pub fn wizard(allocator: *std.mem.Allocator) !void {
+pub fn wizard(allocator: std.mem.Allocator) !void {
     @setEvalBranchQuota(2500);
     write(
         \\Welcome to the ZLS configuration wizard!
@@ -96,7 +96,7 @@ pub fn wizard(allocator: *std.mem.Allocator) !void {
         else => 1024 * 1024,
     };
 
-    std.debug.warn("Writing config to {s}/zls.json ... ", .{config_path});
+    std.debug.print("Writing config to {s}/zls.json ... ", .{config_path});
 
     try std.json.stringify(.{
         .zig_exe_path = zig_exe_path,
@@ -127,6 +127,8 @@ pub fn wizard(allocator: *std.mem.Allocator) !void {
                 \\https://github.com/sublimelsp/LSP/releases or via Package Control.
                 \\Then, add the following snippet to LSP's user settings:
                 \\
+                \\For Sublime Text 3:
+                \\
                 \\{
                 \\  "clients": {
                 \\    "zig": {
@@ -134,7 +136,19 @@ pub fn wizard(allocator: *std.mem.Allocator) !void {
                 \\      "enabled": true,
                 \\      "languageId": "zig",
                 \\      "scopes": ["source.zig"],
-                \\      "syntaxes": ["Packages/Zig/Syntaxes/Zig.tmLanguage"]
+                \\      "syntaxes": ["Packages/Zig Language/Syntaxes/Zig.tmLanguage"]
+                \\    }
+                \\  }
+                \\}
+                \\
+                \\For Sublime Text 4:
+                \\
+                \\{
+                \\  "clients": {
+                \\    "zig": {
+                \\      "command": ["zls"],
+                \\      "enabled": true,
+                \\      "selector": "source.zig"
                 \\    }
                 \\  }
                 \\}
@@ -213,7 +227,7 @@ pub fn wizard(allocator: *std.mem.Allocator) !void {
     write("\n\nThank you for choosing ZLS!\n");
 }
 
-pub fn findZig(allocator: *std.mem.Allocator) !?[]const u8 {
+pub fn findZig(allocator: std.mem.Allocator) !?[]const u8 {
     const env_path = std.process.getEnvVarOwned(allocator, "PATH") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => {
             return null;

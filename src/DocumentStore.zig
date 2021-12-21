@@ -21,7 +21,7 @@ const BuildFile = struct {
 
     builtin_uri: ?[]const u8 = null,
 
-    pub fn destroy(self: *BuildFile, allocator: *std.mem.Allocator) void {
+    pub fn destroy(self: *BuildFile, allocator: std.mem.Allocator) void {
         if (self.builtin_uri) |builtin_uri| allocator.free(builtin_uri);
         allocator.destroy(self);
     }
@@ -45,15 +45,26 @@ pub const Handle = struct {
     }
 };
 
-allocator: *std.mem.Allocator,
+allocator: std.mem.Allocator,
 handles: std.StringHashMap(*Handle),
 zig_exe_path: ?[]const u8,
 build_files: std.ArrayListUnmanaged(*BuildFile),
 build_runner_path: []const u8,
 build_runner_cache_path: []const u8,
 std_uri: ?[]const u8,
+zig_cache_root: []const u8,
+zig_global_cache_root: []const u8,
 
-pub fn init(self: *DocumentStore, allocator: *std.mem.Allocator, zig_exe_path: ?[]const u8, build_runner_path: []const u8, build_runner_cache_path: []const u8, zig_lib_path: ?[]const u8) !void {
+pub fn init(
+    self: *DocumentStore,
+    allocator: std.mem.Allocator,
+    zig_exe_path: ?[]const u8,
+    build_runner_path: []const u8,
+    build_runner_cache_path: []const u8,
+    zig_lib_path: ?[]const u8,
+    zig_cache_root: []const u8,
+    zig_global_cache_root: []const u8,
+) !void {
     self.allocator = allocator;
     self.handles = std.StringHashMap(*Handle).init(allocator);
     self.zig_exe_path = zig_exe_path;
@@ -61,9 +72,11 @@ pub fn init(self: *DocumentStore, allocator: *std.mem.Allocator, zig_exe_path: ?
     self.build_runner_path = build_runner_path;
     self.build_runner_cache_path = build_runner_cache_path;
     self.std_uri = try stdUriFromLibPath(allocator, zig_lib_path);
+    self.zig_cache_root = zig_cache_root;
+    self.zig_global_cache_root = zig_global_cache_root;
 }
 
-fn loadBuildAssociatedConfiguration(allocator: *std.mem.Allocator, build_file: *BuildFile, build_file_path: []const u8) !void {
+fn loadBuildAssociatedConfiguration(allocator: std.mem.Allocator, build_file: *BuildFile, build_file_path: []const u8) !void {
     const directory_path = build_file_path[0 .. build_file_path.len - "build.zig".len];
 
     const options = std.json.ParseOptions{ .allocator = allocator };
@@ -93,11 +106,13 @@ fn loadBuildAssociatedConfiguration(allocator: *std.mem.Allocator, build_file: *
 
 const LoadPackagesContext = struct {
     build_file: *BuildFile,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     build_runner_path: []const u8,
     build_runner_cache_path: []const u8,
     zig_exe_path: []const u8,
     build_file_path: ?[]const u8 = null,
+    cache_root: []const u8,
+    global_cache_root: []const u8,
 };
 
 fn loadPackages(context: LoadPackagesContext) !void {
@@ -123,6 +138,11 @@ fn loadPackages(context: LoadPackagesContext) !void {
             "@build@",
             build_file_path,
             "--pkg-end",
+            "--",
+            zig_exe_path,
+            directory_path,
+            context.cache_root,
+            context.global_cache_root,
         },
     });
 
@@ -154,7 +174,7 @@ fn loadPackages(context: LoadPackagesContext) !void {
                         const pkg_uri = try URI.fromPath(allocator, pkg_abs_path);
                         errdefer allocator.free(pkg_uri);
 
-                        const duped_name = try std.mem.dupe(allocator, u8, name);
+                        const duped_name = try allocator.dupe(u8, name);
                         errdefer allocator.free(duped_name);
 
                         (try build_file.packages.addOne(allocator)).* = .{
@@ -209,7 +229,7 @@ fn newDocument(self: *DocumentStore, uri: []const u8, text: [:0]u8) anyerror!*Ha
 
         build_file.* = .{
             .refs = 1,
-            .uri = try std.mem.dupe(self.allocator, u8, uri),
+            .uri = try self.allocator.dupe(u8, uri),
             .packages = .{},
         };
 
@@ -229,6 +249,8 @@ fn newDocument(self: *DocumentStore, uri: []const u8, text: [:0]u8) anyerror!*Ha
             .build_runner_cache_path = self.build_runner_cache_path,
             .zig_exe_path = self.zig_exe_path.?,
             .build_file_path = build_file_path,
+            .cache_root = self.zig_cache_root,
+            .global_cache_root = self.zig_global_cache_root,
         }) catch |err| {
             log.debug("Failed to load packages of build file {s} (error: {})", .{ build_file.uri, err });
         };
@@ -291,6 +313,12 @@ fn newDocument(self: *DocumentStore, uri: []const u8, text: [:0]u8) anyerror!*Ha
                     }
                 }
 
+                // Check if the build file already exists
+                if (self.handles.get(build_file_uri)) |build_file_handle| {
+                    candidate = build_file_handle.is_build_file.?;
+                    break;
+                }
+
                 // Read the build file, create a new document, set the candidate to the new build file.
                 const build_file_text = try build_file.readToEndAllocOptions(
                     self.allocator,
@@ -337,9 +365,9 @@ pub fn openDocument(self: *DocumentStore, uri: []const u8, text: []const u8) !*H
         return entry.value_ptr.*;
     }
 
-    const duped_text = try std.mem.dupeZ(self.allocator, u8, text);
+    const duped_text = try self.allocator.dupeZ(u8, text);
     errdefer self.allocator.free(duped_text);
-    const duped_uri = try std.mem.dupe(self.allocator, u8, uri);
+    const duped_uri = try self.allocator.dupeZ(u8, uri);
     errdefer self.allocator.free(duped_uri);
 
     return try self.newDocument(duped_uri, duped_text);
@@ -490,6 +518,8 @@ pub fn applySave(self: *DocumentStore, handle: *Handle) !void {
             .build_runner_path = self.build_runner_path,
             .build_runner_cache_path = self.build_runner_cache_path,
             .zig_exe_path = self.zig_exe_path.?,
+            .cache_root = self.zig_cache_root,
+            .global_cache_root = self.zig_global_cache_root,
         }) catch |err| {
             log.debug("Failed to load packages of build file {s} (error: {})", .{ build_file.uri, err });
         };
@@ -563,16 +593,16 @@ pub fn applyChanges(self: *DocumentStore, handle: *Handle, content_changes: std.
     try self.refreshDocument(handle);
 }
 
-pub fn uriFromImportStr(self: *DocumentStore, allocator: *std.mem.Allocator, handle: Handle, import_str: []const u8) !?[]const u8 {
+pub fn uriFromImportStr(self: *DocumentStore, allocator: std.mem.Allocator, handle: Handle, import_str: []const u8) !?[]const u8 {
     if (std.mem.eql(u8, import_str, "std")) {
-        if (self.std_uri) |uri| return try std.mem.dupe(allocator, u8, uri) else {
+        if (self.std_uri) |uri| return try allocator.dupe(u8, uri) else {
             log.debug("Cannot resolve std library import, path is null.", .{});
             return null;
         }
     } else if (std.mem.eql(u8, import_str, "builtin")) {
         if (handle.associated_build_file) |build_file| {
             if (build_file.builtin_uri) |builtin_uri| {
-                return try std.mem.dupe(allocator, u8, builtin_uri);
+                return try allocator.dupe(u8, builtin_uri);
             }
         }
         return null; // TODO find the correct zig-cache folder
@@ -580,7 +610,7 @@ pub fn uriFromImportStr(self: *DocumentStore, allocator: *std.mem.Allocator, han
         if (handle.associated_build_file) |build_file| {
             for (build_file.packages.items) |pkg| {
                 if (std.mem.eql(u8, import_str, pkg.name)) {
-                    return try std.mem.dupe(allocator, u8, pkg.uri);
+                    return try allocator.dupe(u8, pkg.uri);
                 }
             }
         }
@@ -670,13 +700,13 @@ pub fn resolveImport(self: *DocumentStore, handle: *Handle, import_str: []const 
         try handle.imports_used.append(self.allocator, handle_uri);
         // Swap handles.
         // This takes ownership of the passed uri and text.
-        const duped_final_uri = try std.mem.dupe(allocator, u8, final_uri);
+        const duped_final_uri = try allocator.dupe(u8, final_uri);
         errdefer allocator.free(duped_final_uri);
         return try self.newDocument(duped_final_uri, file_contents);
     }
 }
 
-fn stdUriFromLibPath(allocator: *std.mem.Allocator, zig_lib_path: ?[]const u8) !?[]const u8 {
+fn stdUriFromLibPath(allocator: std.mem.Allocator, zig_lib_path: ?[]const u8) !?[]const u8 {
     if (zig_lib_path) |zpath| {
         const std_path = std.fs.path.resolve(allocator, &[_][]const u8{
             zpath, "./std/std.zig",
@@ -734,7 +764,7 @@ fn tagStoreCompletionItems(self: DocumentStore, arena: *std.heap.ArenaAllocator,
     }
 
     var result_set = analysis.CompletionSet{};
-    try result_set.ensureCapacity(&arena.allocator, max_len);
+    try result_set.ensureTotalCapacity(arena.allocator(), max_len);
     for (@field(base.document_scope, name).entries.items(.key)) |completion| {
         result_set.putAssumeCapacityNoClobber(completion, {});
     }
